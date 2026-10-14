@@ -4,29 +4,31 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
+from typing import Any, TextIO
 
 import structlog
 
 _configured = False
 
 
-def configure_logging(level: str = "INFO") -> None:
+def configure_logging(level: str = "INFO", *, stream: TextIO | None = None) -> None:
     """Configure structlog to emit JSON and route stdlib logging through it.
 
-    Idempotent: repeat calls are no-ops so importing the app in tests does not
-    reconfigure (and quiet) logging on every app factory call.
+    Idempotent for the default stream: repeat calls are no-ops so importing the
+    app in tests does not reconfigure logging on every app factory call. Passing
+    an explicit ``stream`` (used by tests) reconfigures the output target.
     """
     global _configured
     numeric_level = logging.getLevelName(level.upper())
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
 
-    if _configured:
+    if _configured and stream is None:
         structlog.contextvars.clear_contextvars()
         return
 
-    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=numeric_level)
+    output = stream if stream is not None else sys.stdout
+    logging.basicConfig(format="%(message)s", stream=output, level=numeric_level)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -37,7 +39,7 @@ def configure_logging(level: str = "INFO") -> None:
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(numeric_level),
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=output),
         cache_logger_on_first_use=True,
     )
     _configured = True
