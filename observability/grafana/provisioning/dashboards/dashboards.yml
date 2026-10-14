@@ -1,0 +1,14 @@
+# Load dashboards from JSON files on disk. The dashboards are committed as code
+# and mounted read-only; Grafana reloads them on the configured interval.
+apiVersion: 1
+
+providers:
+  - name: womm
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,19 @@
+# Minimal local Prometheus configuration. Full alert rules and dashboards are
+# Phase 6; this is only enough to prove the scrape path works end to end.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus scrapes itself, so `up` for this job is a useful sanity check.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # The API exposes the certificate counters, queue depth and the render
+  # histogram at /metrics inside the compose network.
+  - job_name: womm-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]

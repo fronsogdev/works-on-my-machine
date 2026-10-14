@@ -1,0 +1,151 @@
+# Full local stack: api, worker, redis, postgres, prometheus, grafana and a
+# one-shot migration service. `make up` builds and starts it.
+#
+# Every value below is a throwaway local-dev default, not a secret. The cloud
+# deployment gets real credentials from Secret Manager; nothing here is reused
+# outside a developer laptop.
+
+x-app-env: &app-env
+  WOMM_DATABASE_URL: postgresql+asyncpg://womm:womm@postgres:5432/womm
+  WOMM_REDIS_URL: redis://redis:6379/0
+  WOMM_QUEUE_NAME: certificates
+  WOMM_LOG_LEVEL: INFO
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: womm
+      POSTGRES_PASSWORD: womm
+      POSTGRES_DB: womm
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named volume: the database is meant to outlive the container, so it must
+      # not sit in the writable layer that `make down` discards.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # First-run initdb can take a while on a slow disk; the generous start
+      # period and retry budget stop compose from giving up mid-initialisation.
+      test: ["CMD-SHELL", "pg_isready -U womm -d womm"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+    restart: unless-stopped
+
+  # One-shot schema migration. compose starts it before the API and worker and
+  # waits for a successful exit, so neither ever races the schema.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    image: womm-api:local
+    entrypoint: ["alembic", "-c", "migrations/alembic.ini", "upgrade", "head"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    image: womm-api:local
+    ports:
+      - "8000:8000"
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Read-only root filesystem; the only writable path is the /tmp tmpfs that
+    # Pillow and Python use for scratch files.
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    image: womm-worker:local
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    healthcheck:
+      # This image ships BusyBox wget and no curl (verified against v3.15.0).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    ports:
+      - "3000:3000"
+    environment:
+      # Local-only admin credentials for the demo dashboard.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Named volume: Grafana keeps its SQLite state and any local settings under
+      # /var/lib/grafana, which should survive restarts.
+      - grafana_data:/var/lib/grafana
+    healthcheck:
+      # This image ships curl (verified against 13.2.4). The first boot runs
+      # unified-storage migrations and installs bundled plugins, which can take
+      # minutes on a slow disk, so the start period is deliberately long.
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:

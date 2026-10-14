@@ -1,0 +1,12 @@
+# Auto-provision the local Prometheus instance as the default datasource, so a
+# fresh Grafana has a working connection with no manual clicking.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
