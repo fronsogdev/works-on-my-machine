@@ -3,22 +3,44 @@
 .DEFAULT_GOAL := help
 
 UV := uv
+COMPOSE := docker compose
 
-.PHONY: help install lint format test coverage migrate api worker
+.PHONY: help install lint format test coverage migrate api worker \
+        build build-compare up down clean
 
 help: ## Show the available targets
 	@echo "Works On My Machine -- available targets:"
-	@echo "  make install   Create the uv env and install dependencies"
-	@echo "  make lint      ruff check + ruff format --check + mypy"
-	@echo "  make format    Auto-fix and format with ruff"
-	@echo "  make test      pytest with coverage, fails under 80% (no Docker needed)"
-	@echo "  make coverage  pytest with an HTML coverage report in htmlcov/"
-	@echo "  make migrate   Apply Alembic migrations (needs a reachable database)"
-	@echo "  make api       Run the API with autoreload (needs Postgres + Redis)"
-	@echo "  make worker    Run an RQ worker (needs Postgres + Redis)"
+	@echo "  make install        Create the uv env and install dependencies"
+	@echo "  make up             Build and start the full local stack (compose)"
+	@echo "  make down           Stop the local stack, keeping named volumes"
+	@echo "  make clean          Stop the stack and delete its named volumes"
+	@echo "  make build          Build the api and worker images"
+	@echo "  make build-compare  Build naive vs real images and print the size table"
+	@echo "  make lint           ruff check + ruff format --check + mypy"
+	@echo "  make format         Auto-fix and format with ruff"
+	@echo "  make test           pytest with coverage, fails under 80% (no Docker needed)"
+	@echo "  make coverage       pytest with an HTML coverage report in htmlcov/"
+	@echo "  make migrate        Apply Alembic migrations (needs a reachable database)"
+	@echo "  make api            Run the API with autoreload (needs Postgres + Redis)"
+	@echo "  make worker         Run an RQ worker (needs Postgres + Redis)"
 
 install: ## Create the uv env and install dependencies
 	$(UV) sync
+
+up: ## Build and start the full local stack
+	$(COMPOSE) up -d --build
+
+down: ## Stop the local stack, keeping named volumes
+	$(COMPOSE) down
+
+clean: ## Stop the stack and delete its named volumes
+	$(COMPOSE) down -v --remove-orphans
+
+build: ## Build the api and worker images
+	$(COMPOSE) build api worker
+
+build-compare: ## Build naive vs real images and print the size/layer table
+	./docker/compare-images.sh
 
 lint: ## Lint, format-check and type-check
 	$(UV) run ruff check .
