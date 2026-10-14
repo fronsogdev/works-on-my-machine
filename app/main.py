@@ -63,7 +63,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if app.state.owns_engine:
         await app.state.engine.dispose()
     if app.state.owns_redis:
-        app.state.redis.close()
+        # redis-py's close() is synchronous; keep it off the event loop.
+        await run_in_threadpool(app.state.redis.close)
 
 
 def _status_payload(certificate: Certificate) -> CertificateStatus:
