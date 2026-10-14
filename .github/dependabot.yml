@@ -1,0 +1,43 @@
+# Dependabot keeps the pinned supply chain current: GitHub Actions (which are
+# pinned by commit SHA in .github/workflows), the container base images, and the
+# Python dependencies declared in pyproject.toml / uv.lock.
+version: 2
+updates:
+  # GitHub Actions. Dependabot proposes a new commit SHA plus the matching tag
+  # comment, which is exactly how the workflow pins them.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Container base images used by the multi-stage Dockerfiles.
+  - package-ecosystem: docker
+    directory: "/docker"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - docker
+    groups:
+      docker:
+        patterns: ["*"]
+
+  # Python dependencies via uv. Dependabot has supported the uv ecosystem (both
+  # version updates and security updates) since 2025, so it can update uv.lock
+  # directly instead of falling back to the pip ecosystem.
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - python
+    groups:
+      python:
+        patterns: ["*"]
