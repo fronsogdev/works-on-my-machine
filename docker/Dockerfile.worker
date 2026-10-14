@@ -46,8 +46,9 @@ RUN chmod +x /usr/local/bin/entrypoint-worker.sh
 USER womm:womm
 
 # Readiness probe: `rq info` opens a Redis connection and exits non-zero if it
-# cannot. The start period allows for a cold connection to Redis.
+# cannot. The start period allows for a cold connection to Redis. Exec form (via
+# `sh -c`) keeps the shell redirection without tripping hadolint's DL3025.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD rq info --url "${WOMM_REDIS_URL}" > /dev/null || exit 1
+    CMD ["sh", "-c", "rq info --url \"${WOMM_REDIS_URL}\" > /dev/null || exit 1"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint-worker.sh"]
