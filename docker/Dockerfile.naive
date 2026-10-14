@@ -1,0 +1,38 @@
+# Deliberately bad image, built only by `make build-compare` to put real numbers
+# on what the real Dockerfile avoids. Every anti-pattern is called out below.
+# Do not copy this file into anything that matters.
+
+# Anti-pattern 1: the full python:3.12 image. It carries a compiler, headers and
+# build libraries the application never needs at runtime, roughly an order of
+# magnitude larger than python:3.12-slim.
+FROM python:3.12
+
+# Anti-pattern 2: a single stage and `COPY . .`, so everything the .dockerignore
+# does not exclude lands in the one and only layer and can never be removed.
+# There is no separation between build-time and runtime content.
+WORKDIR /app
+COPY . .
+
+# Anti-pattern 3: unpinned `pip install`. No lockfile, so two builds of the same
+# commit can resolve to different dependency versions, and the resolution is not
+# reproducible. Installing from the wheel cache also leaves build artifacts.
+RUN pip install --no-cache-dir \
+        alembic \
+        asyncpg \
+        fastapi \
+        pillow \
+        prometheus-client \
+        "psycopg[binary]" \
+        pydantic-settings \
+        redis \
+        rq \
+        "sqlalchemy[asyncio]" \
+        structlog \
+        "uvicorn[standard]"
+
+# Anti-pattern 4: no USER instruction, so the process runs as root. A container
+# escape then starts from root inside the container.
+#
+# Anti-pattern 5: no HEALTHCHECK, so an orchestrator cannot tell a live process
+# from a dead one.
+ENTRYPOINT ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
