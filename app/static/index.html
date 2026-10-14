@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Works On My Machine&trade; Certification Authority</title>
+    <style>
+      :root {
+        --ink: #202026;
+        --paper: #faf7f0;
+        --accent: #962020;
+        --muted: #6e6860;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-serif, Georgia, "Times New Roman", serif;
+        background: #efe9dd;
+        color: var(--ink);
+        line-height: 1.5;
+      }
+      header {
+        text-align: center;
+        padding: 2rem 1rem 1rem;
+        border-bottom: 3px double var(--accent);
+      }
+      header h1 { margin: 0; font-size: 2rem; letter-spacing: 0.02em; }
+      header p { margin: 0.5rem 0 0; color: var(--muted); }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 1.5rem 1rem 4rem;
+      }
+      form, section {
+        background: var(--paper);
+        border: 1px solid #ddd3c2;
+        border-radius: 8px;
+        padding: 1.25rem;
+        margin-bottom: 1.5rem;
+      }
+      label { display: block; font-weight: 700; margin: 0.75rem 0 0.25rem; }
+      input, textarea, button {
+        width: 100%;
+        font: inherit;
+        padding: 0.5rem;
+        border: 1px solid #c9bda8;
+        border-radius: 4px;
+        background: #fffdf8;
+      }
+      textarea { min-height: 4rem; resize: vertical; }
+      button {
+        margin-top: 1rem;
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+        cursor: pointer;
+        font-weight: 700;
+      }
+      button:disabled { opacity: 0.6; cursor: wait; }
+      #status { margin-top: 1rem; color: var(--muted); min-height: 1.5rem; }
+      #certificate { max-width: 100%; border: 1px solid #ddd3c2; border-radius: 4px; }
+      ol { padding-left: 1.25rem; }
+      li { margin-bottom: 0.75rem; }
+      .excuse { color: var(--accent); font-style: italic; }
+      .serial { color: var(--muted); font-size: 0.85rem; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Works On My Machine&trade; Certification Authority</h1>
+      <p>Official proof that your code works. On at least one machine. Probably yours.</p>
+    </header>
+    <main>
+      <form id="request-form">
+        <label for="name">Your name (or the name you give CI)</label>
+        <input id="name" name="name" maxlength="80" required placeholder="Ada Lovelace" />
+
+        <label for="project">Project</label>
+        <input id="project" name="project" maxlength="120" required placeholder="totally-not-prod" />
+
+        <label for="excuse">Excuse on file</label>
+        <textarea
+          id="excuse"
+          name="excuse"
+          maxlength="280"
+          required
+          placeholder="It passed locally, I swear."
+        ></textarea>
+
+        <button type="submit">Request certificate</button>
+        <p id="status" role="status"></p>
+      </form>
+
+      <section id="certificate-box" hidden>
+        <h2>Your certificate</h2>
+        <img id="certificate" alt="Certificate of Works On My Machine" />
+      </section>
+
+      <section>
+        <h2>Hall of Shame</h2>
+        <p class="serial">The most recent claims that a machine works. Nobody verified a second machine.</p>
+        <ol id="hall"></ol>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById("request-form");
+      const statusEl = document.getElementById("status");
+      const box = document.getElementById("certificate-box");
+      const img = document.getElementById("certificate");
+      const hall = document.getElementById("hall");
+
+      async function loadHall() {
+        try {
+          const response = await fetch("/hall-of-shame");
+          if (!response.ok) return;
+          const entries = await response.json();
+          hall.innerHTML = "";
+          for (const entry of entries) {
+            const item = document.createElement("li");
+            const project = document.createElement("strong");
+            project.textContent = entry.project;
+            const name = document.createElement("span");
+            name.textContent = " — " + entry.name + " ";
+            const excuse = document.createElement("span");
+            excuse.className = "excuse";
+            excuse.textContent = '"' + entry.excuse + '"';
+            const serial = document.createElement("div");
+            serial.className = "serial";
+            serial.textContent = entry.serial_number || "";
+            item.append(project, name, excuse, serial);
+            hall.appendChild(item);
+          }
+          if (!entries.length) {
+            const item = document.createElement("li");
+            item.textContent = "No certificates yet. Be the first to blame your machine.";
+            hall.appendChild(item);
+          }
+        } catch (error) {
+          hall.innerHTML = "<li>Could not load the hall of shame. Ironic.</li>";
+        }
+      }
+
+      async function poll(id) {
+        for (let attempt = 0; attempt < 60; attempt++) {
+          const response = await fetch(`/certificates/${id}?output=json`);
+          const data = await response.json();
+          if (data.status === "done") {
+            img.src = `/certificates/${id}`;
+            box.hidden = false;
+            statusEl.textContent = "Certified. Tell no one how.";
+            await loadHall();
+            return;
+          }
+          if (data.status === "failed") {
+            statusEl.textContent = "The renderer gave up. Very on brand.";
+            return;
+          }
+          statusEl.textContent = "Stamping, notarizing, making excuses… (" + data.status + ")";
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+        statusEl.textContent = "Still queued. The worker is on a coffee break.";
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = form.querySelector("button");
+        button.disabled = true;
+        statusEl.textContent = "Submitting your claim…";
+        try {
+          const response = await fetch("/certificates", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: form.name.value,
+              project: form.project.value,
+              excuse: form.excuse.value,
+            }),
+          });
+          if (!response.ok) {
+            const problem = await response.json();
+            statusEl.textContent = "Rejected: " + (problem.detail || problem.excuse || "unknown");
+            return;
+          }
+          const created = await response.json();
+          await poll(created.id);
+        } catch (error) {
+          statusEl.textContent = "Network error. It worked on my machine, though.";
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      loadHall();
+    </script>
+  </body>
+</html>
