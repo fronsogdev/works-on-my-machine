@@ -140,6 +140,26 @@ async def test_readyz_reports_dependency_failure(
     assert any("redis" in problem for problem in body["problems"])
 
 
+async def test_readyz_reports_database_failure(client: AsyncClient, app: FastAPI) -> None:
+    class BrokenSession:
+        async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("database is having a moment")
+
+    def broken_session() -> BrokenSession:
+        return BrokenSession()
+
+    app.dependency_overrides[get_session] = broken_session
+
+    response = await client.get("/readyz")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "unready"
+    assert any("database" in problem for problem in body["problems"])
+    # Redis is healthy, so only the database is reported.
+    assert not any("redis" in problem for problem in body["problems"])
+
+
 async def test_metrics_reflects_database_and_redis(client: AsyncClient, app: FastAPI) -> None:
     await _seed_done(app)
     record_render_duration(app.state.redis, 150, window=500)
