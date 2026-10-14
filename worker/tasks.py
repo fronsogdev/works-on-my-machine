@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 import redis
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings, get_settings
@@ -29,6 +30,10 @@ from worker.renderer import choose_notary, generate_serial_number, render_certif
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
 _redis: redis.Redis | None = None
+
+# How many times to retry with a fresh serial number when the unique constraint
+# rejects one. The serial is drawn into the PNG, so a retry re-renders.
+SERIAL_ALLOCATION_ATTEMPTS = 5
 
 
 def _session_factory_for(settings: Settings) -> sessionmaker[Session]:
@@ -75,33 +80,56 @@ def render_certificate(certificate_id: str) -> None:
         session.commit()
 
         issued_at = datetime.now(UTC)
-        serial_number = generate_serial_number(issued_at.year)
         notary = choose_notary()
 
-        started = time.perf_counter()
-        try:
-            png = render_certificate_png(
-                name=certificate.name,
-                project=certificate.project,
-                excuse=certificate.excuse,
-                serial_number=serial_number,
-                notary=notary,
-                issued_at=issued_at,
-            )
-        except Exception:
+        serial_number: str | None = None
+        duration_ms = 0
+        for attempt in range(1, SERIAL_ALLOCATION_ATTEMPTS + 1):
+            candidate = generate_serial_number(issued_at.year)
+            started = time.perf_counter()
+            try:
+                png = render_certificate_png(
+                    name=certificate.name,
+                    project=certificate.project,
+                    excuse=certificate.excuse,
+                    serial_number=candidate,
+                    notary=notary,
+                    issued_at=issued_at,
+                )
+            except Exception:
+                certificate.status = STATUS_FAILED
+                session.commit()
+                log.exception("certificate_render_failed")
+                raise
+            duration_ms = int((time.perf_counter() - started) * 1000)
+
+            certificate.status = STATUS_DONE
+            certificate.serial_number = candidate
+            certificate.notary = notary
+            certificate.image_png = png
+            certificate.render_duration_ms = duration_ms
+            certificate.issued_at = issued_at
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                log.warning("serial_collision", serial_number=candidate, attempt=attempt)
+                refreshed = session.get(Certificate, certificate_id)
+                if refreshed is None:  # pragma: no cover - the row exists
+                    raise
+                certificate = refreshed
+                continue
+            serial_number = candidate
+            break
+        else:
             certificate.status = STATUS_FAILED
             session.commit()
-            log.exception("certificate_render_failed")
-            raise
+            raise RuntimeError(
+                f"could not allocate a unique serial number after "
+                f"{SERIAL_ALLOCATION_ATTEMPTS} attempts"
+            )
 
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        certificate.status = STATUS_DONE
-        certificate.serial_number = serial_number
-        certificate.notary = notary
-        certificate.image_png = png
-        certificate.render_duration_ms = duration_ms
-        certificate.issued_at = issued_at
-        session.commit()
+        assert serial_number is not None
 
     record_render_duration(connection, duration_ms, settings.render_duration_window)
     log.info("certificate_rendered", duration_ms=duration_ms, serial_number=serial_number)

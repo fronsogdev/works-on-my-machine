@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, LargeBinary, String, func
+from sqlalchemy import DateTime, Integer, LargeBinary, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # Certificate lifecycle states.
@@ -17,6 +17,8 @@ STATUS_QUEUED = "queued"
 STATUS_PROCESSING = "processing"
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
+
+SERIAL_NUMBER_UNIQUE_CONSTRAINT = "uq_certificates_serial_number"
 
 
 class Base(DeclarativeBase):
@@ -27,6 +29,7 @@ class Certificate(Base):
     """A single issued (or in-flight) certificate."""
 
     __tablename__ = "certificates"
+    __table_args__ = (UniqueConstraint("serial_number", name=SERIAL_NUMBER_UNIQUE_CONSTRAINT),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(80))

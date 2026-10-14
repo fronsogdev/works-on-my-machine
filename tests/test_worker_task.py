@@ -100,3 +100,36 @@ def test_render_failure_marks_certificate_failed(
         assert certificate.image_png is None
 
     assert read_render_durations(connection) == []
+
+
+def test_serial_collision_retries_with_a_new_serial(
+    worker_env: tuple[Settings, sessionmaker[Session], fakeredis.FakeRedis],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, factory, connection = worker_env
+    # An already-issued certificate owns the first serial we are about to draw.
+    _insert(
+        factory,
+        id="cert-existing",
+        name="Existing",
+        project="legacy",
+        excuse="Works locally.",
+        status=STATUS_DONE,
+        serial_number="COLLIDE",
+    )
+    _insert(factory, id="cert-new", name="Ada", project="engine", excuse="Works locally.")
+
+    candidates = iter(["COLLIDE", "UNIQUE"])
+    monkeypatch.setattr(tasks, "generate_serial_number", lambda _year: next(candidates))
+
+    render_certificate("cert-new")
+
+    with factory() as session:
+        certificate = session.get(Certificate, "cert-new")
+        assert certificate is not None
+        assert certificate.status == STATUS_DONE
+        assert certificate.serial_number == "UNIQUE"
+        assert certificate.image_png is not None
+        assert certificate.image_png.startswith(b"\x89PNG\r\n\x1a\n")
+
+    assert len(read_render_durations(connection)) == 1
