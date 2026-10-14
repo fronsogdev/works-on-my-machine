@@ -21,10 +21,13 @@ CONSTRAINT_NAME = "uq_certificates_serial_number"
 
 
 def upgrade() -> None:
-    # Postgres (and SQLite) both allow multiple NULLs under a UNIQUE constraint,
-    # so in-flight rows with no serial yet are unaffected.
-    op.create_unique_constraint(CONSTRAINT_NAME, "certificates", ["serial_number"])
+    # batch mode recreates the table on SQLite (which cannot ALTER a constraint
+    # in place) and issues a plain ALTER TABLE on Postgres. NULL serial numbers
+    # stay allowed on both, so in-flight rows are unaffected.
+    with op.batch_alter_table("certificates", recreate="auto") as batch_op:
+        batch_op.create_unique_constraint(CONSTRAINT_NAME, ["serial_number"])
 
 
 def downgrade() -> None:
-    op.drop_constraint(CONSTRAINT_NAME, "certificates", type_="unique")
+    with op.batch_alter_table("certificates", recreate="auto") as batch_op:
+        batch_op.drop_constraint(CONSTRAINT_NAME, type_="unique")
