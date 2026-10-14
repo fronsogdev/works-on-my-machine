@@ -1,0 +1,402 @@
+# Continuous integration for the Works On My Machine™ Certification Authority.
+#
+# Runs on every pull request, on pushes to main, and on manual dispatch. Version
+# tags (v*) are included so docker/metadata-action can emit semantic-version tags
+# for a release.
+#
+# House rules enforced here:
+#   * every third-party action is pinned by full commit SHA, with the friendly
+#     version in a trailing comment;
+#   * permissions are denied at the top level and granted per job, least privilege;
+#   * a manual (workflow_dispatch) run validates only — nothing is pushed or signed.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Deny everything by default. Each job opts in to exactly the scopes it needs.
+permissions: {}
+
+# One run per workflow + ref. A new push to a pull request cancels its previous
+# run; pushes to main are never cancelled so a release is never cut in half.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint, type-check and test. This is the gate every pull request must pass.
+  # ---------------------------------------------------------------------------
+  quality:
+    name: quality (ruff, mypy, pytest)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          # Same uv release the images build with, so the lockfile is treated
+          # identically here and in the Dockerfiles.
+          version: "0.12.1"
+          enable-cache: true
+
+      - name: Install the locked dependency set
+        run: uv sync --locked
+
+      - name: Lint, format-check and type-check
+        run: make lint
+
+      - name: Run the test suite with the coverage gate
+        # The testcontainers integration test talks to a real Postgres container;
+        # GitHub-hosted runners have Docker, so it runs here on purpose.
+        run: make test
+
+      - name: Upload the HTML coverage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-html
+          path: htmlcov/
+          if-no-files-found: warn
+
+      - name: Add a developer excuse to the summary
+        if: failure()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          import sys
+
+          # The excuses live in the application itself and app/excuses.py only
+          # imports the standard library, so CI can borrow one for the summary.
+          sys.path.insert(0, os.getcwd())
+          try:
+              from app.excuses import random_excuse
+
+              excuse = random_excuse()
+          except Exception:
+              excuse = "It worked on my machine."
+
+          print("### Build failed")
+          print()
+          print(f"> {excuse}")
+          PY
+
+  # ---------------------------------------------------------------------------
+  # Dockerfile linting. Dockerfile.naive is a deliberately bad teaching artefact
+  # that exists only so the README can compare a sloppy image with a good one;
+  # linting it would produce pure noise, so it is left out of the matrix.
+  # ---------------------------------------------------------------------------
+  hadolint:
+    name: hadolint (${{ matrix.dockerfile }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile:
+          - docker/Dockerfile.api
+          - docker/Dockerfile.worker
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Lint ${{ matrix.dockerfile }}
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+          # Info-level findings (for example DL3066, a named rather than numeric
+          # user) are printed but do not fail the build; warnings and errors do.
+          failure-threshold: warning
+
+      - name: Add a developer excuse to the summary
+        if: failure()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          import sys
+
+          sys.path.insert(0, os.getcwd())
+          try:
+              from app.excuses import random_excuse
+
+              excuse = random_excuse()
+          except Exception:
+              excuse = "It worked on my machine."
+
+          print("### Build failed")
+          print()
+          print(f"> {excuse}")
+          PY
+
+  # ---------------------------------------------------------------------------
+  # Build the api and worker images for both architectures, scan them with Trivy
+  # and emit a Syft SBOM. Building and publishing are split per platform because
+  # BuildKit cannot load or scan a multi-platform image in one go: each leg
+  # produces one platform, and merge-manifest stitches them into a single
+  # manifest list afterwards. On pull requests nothing is published; the amd64
+  # image is loaded into the local daemon purely so Trivy and Syft have
+  # something to inspect, and the arm64 leg just proves the cross-build.
+  # ---------------------------------------------------------------------------
+  build-scan:
+    name: build & scan (${{ matrix.image }}, ${{ matrix.platform.arch }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # check out the repository
+      packages: write # push images to ghcr on main
+      security-events: write # upload the Trivy SARIF report
+      actions: read # read the shared buildx cache
+      # No id-token here: BuildKit provenance attestations are left off because a
+      # per-platform index carrying an attestation cannot be merged cleanly by
+      # `imagetools create`. The OIDC scope is granted only to the sign job.
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, worker]
+        platform:
+          - { name: linux/amd64, arch: amd64 }
+          - { name: linux/arm64, arch: arm64 }
+    env:
+      # What Trivy and Syft inspect: the pushed per-platform tag on a push, or
+      # the locally loaded image on a pull request.
+      SCAN_IMAGE: ${{ github.event_name == 'push' && format('ghcr.io/fronsogdev/works-on-my-machine/{0}:build-{1}-{2}', matrix.image, github.sha, matrix.platform.arch) || format('womm/{0}:scan', matrix.image) }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU (emulates arm64 for the matrix)
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to ghcr.io
+        if: github.event_name == 'push'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build ${{ matrix.image }} for ${{ matrix.platform.name }}
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.image }}
+          platforms: ${{ matrix.platform.name }}
+          push: ${{ github.event_name == 'push' }}
+          # Never load a foreign-architecture image into the daemon; only the
+          # native amd64 leg is loaded, and only when nothing is pushed.
+          load: ${{ github.event_name != 'push' && matrix.platform.arch == 'amd64' }}
+          tags: ${{ env.SCAN_IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy scan (${{ matrix.image }}, ${{ matrix.platform.arch }})
+        # The arm64 leg on a pull request is built but not loaded, so there is
+        # nothing local to scan; on a push every leg has a pushed image.
+        if: github.event_name == 'push' || matrix.platform.arch == 'amd64'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.SCAN_IMAGE }}
+          format: sarif
+          output: trivy-${{ matrix.image }}-${{ matrix.platform.arch }}.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          # Fail only on findings that have a fix. Unfixed base-image CVEs are
+          # still written to the SARIF report, but there is no release to move
+          # to, so they cannot gate the pipeline.
+          ignore-unfixed: true
+
+      - name: Upload the Trivy SARIF report
+        # Runs even when Trivy fails the leg, so the findings are visible in the
+        # Security tab. Fork pull requests cannot write security events, so they
+        # are skipped rather than failed.
+        if: always() && (github.event_name == 'push' || matrix.platform.arch == 'amd64') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: trivy-${{ matrix.image }}-${{ matrix.platform.arch }}.sarif
+          # A distinct category per image and platform keeps both reports
+          # separate in the Security tab.
+          category: trivy-${{ matrix.image }}-${{ matrix.platform.arch }}
+
+      - name: Generate an SPDX SBOM with Syft (${{ matrix.image }}, ${{ matrix.platform.arch }})
+        if: always() && (github.event_name == 'push' || matrix.platform.arch == 'amd64')
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ env.SCAN_IMAGE }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.image }}-${{ matrix.platform.arch }}.spdx.json
+          artifact-name: sbom-${{ matrix.image }}-${{ matrix.platform.arch }}
+
+      - name: Add a developer excuse to the summary
+        if: failure()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          import sys
+
+          sys.path.insert(0, os.getcwd())
+          try:
+              from app.excuses import random_excuse
+
+              excuse = random_excuse()
+          except Exception:
+              excuse = "It worked on my machine."
+
+          print("### Build failed")
+          print()
+          print(f"> {excuse}")
+          PY
+
+  # ---------------------------------------------------------------------------
+  # Stitch the per-platform images into one multi-platform manifest list. This
+  # runs once per image, after every build-scan leg has succeeded. Tag policy:
+  # `sha-<git sha>` always, `latest` only for main-line commits, and a semantic
+  # version only when a v* tag was pushed (see the trigger above).
+  # ---------------------------------------------------------------------------
+  merge-manifest:
+    name: merge manifest (${{ matrix.image }})
+    needs: build-scan
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # write the manifest list and final tags to ghcr
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, worker]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive the final tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/fronsogdev/works-on-my-machine/${{ matrix.image }}
+          tags: |
+            type=sha,format=long
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Combine the per-platform images into one manifest list
+        run: |
+          # One `-t <tag>` pair per line, read into an array so the tags survive
+          # any whitespace without relying on word splitting.
+          mapfile -t tag_args < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          docker buildx imagetools create \
+            "${tag_args[@]}" \
+            "ghcr.io/fronsogdev/works-on-my-machine/${{ matrix.image }}:build-${GITHUB_SHA}-amd64" \
+            "ghcr.io/fronsogdev/works-on-my-machine/${{ matrix.image }}:build-${GITHUB_SHA}-arm64"
+
+      - name: Add a developer excuse to the summary
+        if: failure()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          import sys
+
+          sys.path.insert(0, os.getcwd())
+          try:
+              from app.excuses import random_excuse
+
+              excuse = random_excuse()
+          except Exception:
+              excuse = "It worked on my machine."
+
+          print("### Build failed")
+          print()
+          print(f"> {excuse}")
+          PY
+
+  # ---------------------------------------------------------------------------
+  # Sign the merged images on main, keyless, using the ambient GitHub OIDC
+  # token — no long-lived signing key is stored anywhere. The signature is tied
+  # to the image digest, so it covers every tag that points at that digest.
+  # ---------------------------------------------------------------------------
+  sign:
+    name: sign ${{ matrix.image }} (keyless)
+    needs: merge-manifest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push the signature artefact to ghcr
+      id-token: write # exchange the OIDC token for a Fulcio certificate
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, worker]
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Set up Buildx (for `imagetools inspect`)
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign the SHA-tagged image
+        env:
+          IMAGE: ghcr.io/fronsogdev/works-on-my-machine/${{ matrix.image }}
+        run: |
+          digest=$(docker buildx imagetools inspect "${IMAGE}:sha-${GITHUB_SHA}" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "Signing ${IMAGE}@${digest}"
+          cosign sign --yes "${IMAGE}@${digest}"
+
+      - name: Add a developer excuse to the summary
+        if: failure()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          import sys
+
+          sys.path.insert(0, os.getcwd())
+          try:
+              from app.excuses import random_excuse
+
+              excuse = random_excuse()
+          except Exception:
+              excuse = "It worked on my machine."
+
+          print("### Build failed")
+          print()
+          print(f"> {excuse}")
+          PY
