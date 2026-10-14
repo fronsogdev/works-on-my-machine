@@ -52,7 +52,7 @@ format: ## Auto-fix and format with ruff
 	$(UV) run ruff check --fix .
 
 test: ## Run the test suite with coverage (Docker not required)
-	$(UV) run pytest --cov=app --cov=worker --cov-report=term-missing --cov-fail-under=80
+	$(UV) run pytest --cov=app --cov=worker --cov-report=term-missing --cov-report=html --cov-fail-under=80
 
 coverage: ## Run tests and write an HTML coverage report
 	$(UV) run pytest --cov=app --cov=worker --cov-report=term --cov-report=html
