@@ -197,6 +197,14 @@ jobs:
       - name: Build ${{ matrix.image }} for ${{ matrix.platform.name }}
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          # Push plain single-platform manifests. BuildKit's default provenance
+          # attestation would turn each per-platform push into an index, which
+          # merge-manifest cannot fold into one clean multi-architecture image.
+          # The `provenance: false` input does not help — an empty value still
+          # falls through to the default attestation — so the escape hatch is
+          # this environment variable.
+          BUILDX_NO_DEFAULT_ATTESTATIONS: "true"
         with:
           context: .
           file: docker/Dockerfile.${{ matrix.image }}
@@ -214,12 +222,21 @@ jobs:
         # nothing local to scan; on a push every leg has a pushed image.
         if: github.event_name == 'push' || matrix.platform.arch == 'amd64'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          # A single-architecture image index (which is what a per-platform push
+          # is) carries no hint of which platform to scan; name it per matrix leg
+          # or Trivy refuses with "no child with platform linux/amd64".
+          TRIVY_PLATFORM: ${{ matrix.platform.name }}
         with:
           image-ref: ${{ env.SCAN_IMAGE }}
           format: sarif
           output: trivy-${{ matrix.image }}-${{ matrix.platform.arch }}.sarif
           severity: HIGH,CRITICAL
           exit-code: "1"
+          # When emitting SARIF the action drops the severity filter unless this
+          # is set, which would make --exit-code fail on every severity rather
+          # than just HIGH/CRITICAL.
+          limit-severities-for-sarif: true
           # Fail only on findings that have a fix. Unfixed base-image CVEs are
           # still written to the SARIF report, but there is no release to move
           # to, so they cannot gate the pipeline.
@@ -240,6 +257,9 @@ jobs:
       - name: Generate an SPDX SBOM with Syft (${{ matrix.image }}, ${{ matrix.platform.arch }})
         if: always() && (github.event_name == 'push' || matrix.platform.arch == 'amd64')
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        env:
+          # Same reason as Trivy: tell Syft which platform to resolve.
+          SYFT_PLATFORM: ${{ matrix.platform.name }}
         with:
           image: ${{ env.SCAN_IMAGE }}
           format: spdx-json
