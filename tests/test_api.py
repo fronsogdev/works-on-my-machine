@@ -8,8 +8,10 @@ from typing import Any
 from fastapi import FastAPI
 from httpx import AsyncClient
 
+from app.config import Settings
 from app.db import get_session
 from app.excuses import EXCUSES
+from app.main import create_app
 from app.metrics import record_render_duration
 from app.models import STATUS_DONE, Certificate
 
@@ -188,3 +190,16 @@ async def test_static_front_page_is_served(client: AsyncClient) -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Works On My Machine" in response.text
+
+
+async def test_lifespan_creates_and_releases_owned_resources(api_settings: Settings) -> None:
+    """The production path: no injected engine/redis, so the app owns them."""
+    app = create_app(api_settings)
+
+    async with app.router.lifespan_context(app):
+        assert app.state.sessionmaker is not None
+        assert app.state.queue is not None
+        assert app.state.owns_engine is True
+        assert app.state.owns_redis is True
+
+    assert app.state.engine is not None
