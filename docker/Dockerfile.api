@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1
+#
+# Multi-stage image for the FastAPI API.
+#
+# Stage 1 resolves the locked dependency set into a virtual environment; stage 2
+# ships only that environment plus the application code. The compiler toolchain,
+# package caches and uv itself stay behind in the builder stage.
+
+FROM python:3.12-slim AS builder
+
+# uv is pinned by version. Copying the static binary from its official image
+# avoids a second package manager, and the image is discarded with the builder.
+COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /uvx /bin/
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /app
+
+# Dependency layer. Copying only the lockfile and project metadata means a code
+# change does not invalidate the cached dependency install. The lockfile is
+# enforced, and dev-only packages are excluded from the runtime image.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
+
+# Application code, in its own layer.
+COPY app ./app
+COPY worker ./worker
+COPY migrations ./migrations
+
+
+FROM python:3.12-slim AS runtime
+
+# Unbuffered output so logs reach the container runtime immediately; no bytecode
+# writes so the image runs on a read-only root filesystem; TMPDIR points at the
+# tmpfs-mounted /tmp that Pillow and Python use for scratch files.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/app/.venv/bin:$PATH" \
+    TMPDIR=/tmp \
+    WOMM_PORT=8000
+
+# Dedicated non-root user with a fixed uid, no login shell and no home writes.
+RUN groupadd --system --gid 10001 womm \
+ && useradd --system --uid 10001 --gid womm --home-dir /app --shell /usr/sbin/nologin womm
+
+WORKDIR /app
+
+# The virtual environment is self-contained (its scripts embed the absolute
+# interpreter path), so it can be copied across stages unchanged.
+COPY --from=builder --chown=womm:womm /app/.venv /app/.venv
+COPY --from=builder --chown=womm:womm /app/app ./app
+COPY --from=builder --chown=womm:womm /app/worker ./worker
+COPY --from=builder --chown=womm:womm /app/migrations ./migrations
+COPY --chown=womm:womm docker/entrypoint-api.sh /usr/local/bin/entrypoint-api.sh
+RUN chmod +x /usr/local/bin/entrypoint-api.sh
+
+USER womm:womm
+
+EXPOSE 8000
+
+# Liveness probe using the Python standard library, so no curl/wget is needed in
+# the image. The start period covers migration time on a cold database.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status == 200 else 1)"]
+
+ENTRYPOINT ["/usr/local/bin/entrypoint-api.sh"]

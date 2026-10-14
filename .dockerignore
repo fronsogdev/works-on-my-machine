@@ -1,0 +1,38 @@
+# Files that must never reach the image build context. Keeping this tight makes
+# builds reproducible, keeps secrets and caches out of layers, and shrinks the
+# context the daemon has to upload.
+
+# Version control metadata
+.git
+.gitignore
+
+# Local virtualenv and Python bytecode
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+
+# Tool caches and coverage artifacts
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+
+# Tests, docs and material that is not needed to build or run the images
+tests
+docs
+infra
+loadtest
+observability
+.github
+.pre-commit-config.yaml
+AGENTS.md
+PLAN.md
+
+# Local configuration and secrets
+.env
+
+# docker/ is intentionally NOT ignored: BuildKit needs the Dockerfiles and the
+# comparison script in the context, and the naive build resolves them too.
