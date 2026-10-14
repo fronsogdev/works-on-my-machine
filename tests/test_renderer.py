@@ -8,6 +8,7 @@ import re
 from datetime import UTC, datetime
 
 from PIL import Image
+
 from worker.renderer import (
     HEIGHT,
     NOTARIES,

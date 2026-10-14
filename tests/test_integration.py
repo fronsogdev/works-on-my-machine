@@ -13,14 +13,15 @@ from pathlib import Path
 
 import fakeredis
 import pytest
-import worker.tasks as tasks
 from alembic import command
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
+from rq import Queue, SimpleWorker
+
+import worker.tasks as tasks
 from app.config import Settings, get_settings
 from app.db import create_engine
 from app.main import create_app
-from httpx import ASGITransport, AsyncClient
-from rq import Queue, SimpleWorker
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

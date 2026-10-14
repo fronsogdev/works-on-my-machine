@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import fakeredis
-from app.config import Settings
-from app.task_queue import RENDER_JOB_FUNCTION, create_queue, enqueue_render, queue_depth
 from rq import Queue, SimpleWorker
 from rq.job import Job, JobStatus
+
+from app.config import Settings
+from app.task_queue import RENDER_JOB_FUNCTION, create_queue, enqueue_render, queue_depth
 
 
 def test_enqueue_render_creates_expected_job() -> None:

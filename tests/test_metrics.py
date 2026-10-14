@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fakeredis
+
 from app.metrics import (
     RENDER_DURATIONS_KEY,
     read_render_durations,

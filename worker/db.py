@@ -6,9 +6,10 @@ job; the API keeps using asyncpg.
 
 from __future__ import annotations
 
-from app.config import Settings
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
+
+from app.config import Settings
 
 
 def create_sync_engine(settings: Settings) -> Engine:

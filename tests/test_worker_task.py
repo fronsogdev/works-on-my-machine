@@ -8,11 +8,12 @@ from typing import Any
 
 import fakeredis
 import pytest
+from sqlalchemy.orm import Session, sessionmaker
+
 import worker.tasks as tasks
 from app.config import Settings
 from app.metrics import read_render_durations
 from app.models import STATUS_DONE, STATUS_FAILED, Base, Certificate
-from sqlalchemy.orm import Session, sessionmaker
 from worker.db import create_session_factory, create_sync_engine
 from worker.tasks import render_certificate, reset_connections
 

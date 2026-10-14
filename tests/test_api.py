@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from fastapi import FastAPI
+from httpx import AsyncClient
+
 from app.db import get_session
 from app.excuses import EXCUSES
 from app.metrics import record_render_duration
 from app.models import STATUS_DONE, Certificate
-from fastapi import FastAPI
-from httpx import AsyncClient
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png-bytes"
 

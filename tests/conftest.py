@@ -10,13 +10,14 @@ from collections.abc import AsyncIterator, Iterator
 
 import fakeredis
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from app.config import Settings
 from app.db import create_engine
 from app.main import create_app
 from app.models import Base
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 @pytest.fixture

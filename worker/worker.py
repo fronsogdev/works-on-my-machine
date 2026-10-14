@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import sys
 
+from rq import Queue, Worker
+
 from app.config import get_settings
 from app.logging_setup import configure_logging, get_logger
 from app.task_queue import create_redis
-from rq import Queue, Worker
 
 
 def main() -> int:

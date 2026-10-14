@@ -11,6 +11,9 @@ import time
 from datetime import UTC, datetime
 
 import redis
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+
 from app.config import Settings, get_settings
 from app.logging_setup import get_logger
 from app.metrics import record_render_duration
@@ -20,9 +23,6 @@ from app.models import (
     STATUS_PROCESSING,
     Certificate,
 )
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-
 from worker.db import create_session_factory, create_sync_engine
 from worker.renderer import choose_notary, generate_serial_number, render_certificate_png
 
