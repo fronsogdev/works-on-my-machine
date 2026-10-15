@@ -144,25 +144,21 @@ jobs:
           PY
 
   # ---------------------------------------------------------------------------
-  # Build the api and worker images for both architectures, scan them with Trivy
-  # and emit a Syft SBOM. Building and publishing are split per platform because
-  # BuildKit cannot load or scan a multi-platform image in one go: each leg
-  # produces one platform, and merge-manifest stitches them into a single
-  # manifest list afterwards. On pull requests nothing is published; the amd64
-  # image is loaded into the local daemon purely so Trivy and Syft have
-  # something to inspect, and the arm64 leg just proves the cross-build.
+  # Build the api and worker images for both architectures and scan them with
+  # Trivy and Syft. This job never publishes: each leg builds one platform and
+  # loads it into the local daemon (a foreign-architecture image loads fine, and
+  # scanning never executes it), so Trivy and Syft inspect the image locally.
+  # It runs on pull requests and on main alike, and deliberately holds no
+  # packages scope, so a pull request can never write to ghcr. Publishing is the
+  # separate, main-only push-images job below.
   # ---------------------------------------------------------------------------
   build-scan:
     name: build & scan (${{ matrix.image }}, ${{ matrix.platform.arch }})
     runs-on: ubuntu-latest
     permissions:
       contents: read # check out the repository
-      packages: write # push images to ghcr on main
       security-events: write # upload the Trivy SARIF report
       actions: read # read the shared buildx cache
-      # No id-token here: BuildKit provenance attestations are left off because a
-      # per-platform index carrying an attestation cannot be merged cleanly by
-      # `imagetools create`. The OIDC scope is granted only to the sign job.
     strategy:
       fail-fast: false
       matrix:
@@ -171,9 +167,9 @@ jobs:
           - { name: linux/amd64, arch: amd64 }
           - { name: linux/arm64, arch: arm64 }
     env:
-      # What Trivy and Syft inspect: the pushed per-platform tag on a push, or
-      # the locally loaded image on a pull request.
-      SCAN_IMAGE: ${{ github.event_name == 'push' && format('ghcr.io/fronsogdev/works-on-my-machine/{0}:build-{1}-{2}', matrix.image, github.sha, matrix.platform.arch) || format('womm/{0}:scan', matrix.image) }}
+      # The freshly built image is loaded into the local daemon under this tag;
+      # nothing is pushed from this job.
+      SCAN_IMAGE: womm/${{ matrix.image }}:scan
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -186,46 +182,34 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Log in to ghcr.io
-        if: github.event_name == 'push'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build ${{ matrix.image }} for ${{ matrix.platform.name }}
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
-          # Push plain single-platform manifests. BuildKit's default provenance
-          # attestation would turn each per-platform push into an index, which
-          # merge-manifest cannot fold into one clean multi-architecture image.
-          # The `provenance: false` input does not help — an empty value still
-          # falls through to the default attestation — so the escape hatch is
-          # this environment variable.
+          # Keep the build plain: BuildKit's default provenance attestation wraps
+          # each per-platform image in an index that merge-manifest cannot fold
+          # into one clean multi-architecture image. The `provenance: false`
+          # input does not help — an empty value still falls through to the
+          # default attestation — so this environment variable is the escape
+          # hatch.
           BUILDX_NO_DEFAULT_ATTESTATIONS: "true"
         with:
           context: .
           file: docker/Dockerfile.${{ matrix.image }}
           platforms: ${{ matrix.platform.name }}
-          push: ${{ github.event_name == 'push' }}
-          # Never load a foreign-architecture image into the daemon; only the
-          # native amd64 leg is loaded, and only when nothing is pushed.
-          load: ${{ github.event_name != 'push' && matrix.platform.arch == 'amd64' }}
+          push: false
+          # A foreign-architecture image loads fine into the local daemon; the
+          # scan never runs it, so the arm64 leg is scanned on the amd64 runner.
+          load: true
           tags: ${{ env.SCAN_IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Trivy scan (${{ matrix.image }}, ${{ matrix.platform.arch }})
-        # The arm64 leg on a pull request is built but not loaded, so there is
-        # nothing local to scan; on a push every leg has a pushed image.
-        if: github.event_name == 'push' || matrix.platform.arch == 'amd64'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
-          # A single-architecture image index (which is what a per-platform push
-          # is) carries no hint of which platform to scan; name it per matrix leg
-          # or Trivy refuses with "no child with platform linux/amd64".
+          # Trivy has no way to infer the platform of the locally loaded image;
+          # name it per matrix leg.
           TRIVY_PLATFORM: ${{ matrix.platform.name }}
         with:
           image-ref: ${{ env.SCAN_IMAGE }}
@@ -246,7 +230,7 @@ jobs:
         # Runs even when Trivy fails the leg, so the findings are visible in the
         # Security tab. Fork pull requests cannot write security events, so they
         # are skipped rather than failed.
-        if: always() && (github.event_name == 'push' || matrix.platform.arch == 'amd64') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: trivy-${{ matrix.image }}-${{ matrix.platform.arch }}.sarif
@@ -255,7 +239,7 @@ jobs:
           category: trivy-${{ matrix.image }}-${{ matrix.platform.arch }}
 
       - name: Generate an SPDX SBOM with Syft (${{ matrix.image }}, ${{ matrix.platform.arch }})
-        if: always() && (github.event_name == 'push' || matrix.platform.arch == 'amd64')
+        if: always()
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         env:
           # Same reason as Trivy: tell Syft which platform to resolve.
@@ -287,14 +271,93 @@ jobs:
           PY
 
   # ---------------------------------------------------------------------------
+  # Publish the per-platform images. This is the only job that is granted
+  # packages: write, and it is gated to push events (main and v* tags), so a
+  # pull request never holds publish rights. It reuses the buildx cache that
+  # build-scan just populated, so the rebuild is a cache hit. merge-manifest then
+  # folds the two platform tags into one index.
+  # ---------------------------------------------------------------------------
+  push-images:
+    name: push images (${{ matrix.image }}, ${{ matrix.platform.arch }})
+    needs: build-scan
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # check out the repository
+      packages: write # push the per-platform images to ghcr
+      actions: read # reuse the shared buildx cache
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, worker]
+        platform:
+          - { name: linux/amd64, arch: amd64 }
+          - { name: linux/arm64, arch: arm64 }
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU (emulates arm64 for the matrix)
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.image }} for ${{ matrix.platform.name }}
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          # Push plain single-platform manifests, matching build-scan. Without
+          # this each per-platform push becomes an index with an attestation and
+          # merge-manifest cannot fold it into one clean multi-architecture image.
+          BUILDX_NO_DEFAULT_ATTESTATIONS: "true"
+        with:
+          context: .
+          file: docker/Dockerfile.${{ matrix.image }}
+          platforms: ${{ matrix.platform.name }}
+          push: true
+          tags: ghcr.io/fronsogdev/works-on-my-machine/${{ matrix.image }}:build-${{ github.sha }}-${{ matrix.platform.arch }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Add a developer excuse to the summary
+        if: failure()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import os
+          import sys
+
+          sys.path.insert(0, os.getcwd())
+          try:
+              from app.excuses import random_excuse
+
+              excuse = random_excuse()
+          except Exception:
+              excuse = "It worked on my machine."
+
+          print("### Build failed")
+          print()
+          print(f"> {excuse}")
+          PY
+
+  # ---------------------------------------------------------------------------
   # Stitch the per-platform images into one multi-platform manifest list. This
-  # runs once per image, after every build-scan leg has succeeded. Tag policy:
+  # runs once per image, after every push-images leg has succeeded. Tag policy:
   # `sha-<git sha>` always, `latest` only for main-line commits, and a semantic
   # version only when a v* tag was pushed (see the trigger above).
   # ---------------------------------------------------------------------------
   merge-manifest:
     name: merge manifest (${{ matrix.image }})
-    needs: build-scan
+    needs: push-images
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
