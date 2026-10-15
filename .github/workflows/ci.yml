@@ -225,10 +225,11 @@ jobs:
           # is set, which would make --exit-code fail on every severity rather
           # than just HIGH/CRITICAL.
           limit-severities-for-sarif: true
-          # Fail only on findings that have a fix. Unfixed base-image CVEs are
-          # still written to the SARIF report, but there is no release to move
-          # to, so they cannot gate the pipeline.
-          ignore-unfixed: true
+          # Fail on every HIGH/CRITICAL finding, fixed or unfixed. The only
+          # exceptions are the explicitly triaged CVEs in the repo-root
+          # .trivyignore, which the action reads and hands to Trivy.
+          ignore-unfixed: false
+          trivyignores: .trivyignore
 
       - name: Upload the Trivy SARIF report
         # Runs even when Trivy fails the leg, so the findings are visible in the
