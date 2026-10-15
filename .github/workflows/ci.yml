@@ -202,8 +202,12 @@ jobs:
           # scan never runs it, so the arm64 leg is scanned on the amd64 runner.
           load: true
           tags: ${{ env.SCAN_IMAGE }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # A shared, per-image and per-architecture scope lets the publish job
+          # below reuse this build instead of recompiling it. Without the
+          # explicit scope each job gets its own default scope and the cache is
+          # never shared.
+          cache-from: type=gha,scope=womm-${{ matrix.image }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=womm-${{ matrix.image }}-${{ matrix.platform.arch }}
 
       - name: Trivy scan (${{ matrix.image }}, ${{ matrix.platform.arch }})
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -326,8 +330,10 @@ jobs:
           platforms: ${{ matrix.platform.name }}
           push: true
           tags: ghcr.io/fronsogdev/works-on-my-machine/${{ matrix.image }}:build-${{ github.sha }}-${{ matrix.platform.arch }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Same scope as build-scan, so this is a cache hit rather than a
+          # second full build.
+          cache-from: type=gha,scope=womm-${{ matrix.image }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=womm-${{ matrix.image }}-${{ matrix.platform.arch }}
 
       - name: Add a developer excuse to the summary
         if: failure()
