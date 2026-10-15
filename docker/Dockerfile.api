@@ -6,7 +6,7 @@
 # ships only that environment plus the application code. The compiler toolchain,
 # package caches and uv itself stay behind in the builder stage.
 
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 # uv is pinned by version. Copying the static binary from its official image
 # avoids a second package manager, and the image is discarded with the builder.
@@ -30,7 +30,7 @@ COPY worker ./worker
 COPY migrations ./migrations
 
 
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 # Unbuffered output so logs reach the container runtime immediately; no bytecode
 # writes so the image runs on a read-only root filesystem; TMPDIR points at the
