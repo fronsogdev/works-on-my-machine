@@ -3,7 +3,7 @@
 # Multi-stage image for the RQ worker. The shape mirrors the API image so the
 # two are easy to read side by side; only the entrypoint and healthcheck differ.
 
-FROM python:3.12-slim AS builder
+FROM python:3.14-slim AS builder
 
 # uv is pinned by version and copied from its official image; it does not reach
 # the runtime stage.
@@ -23,7 +23,7 @@ COPY worker ./worker
 COPY migrations ./migrations
 
 
-FROM python:3.12-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
