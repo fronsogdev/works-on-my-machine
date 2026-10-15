@@ -27,6 +27,12 @@ updates:
     groups:
       docker:
         patterns: ["*"]
+    ignore:
+      # Keep the Python base on 3.12.x: requires-python is >=3.12,<3.13, so the
+      # 3.14-slim major bump Dependabot proposes would break the application.
+      # Patch and minor updates within 3.12 are still allowed.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major"]
 
   # Python dependencies via uv. Dependabot has supported the uv ecosystem (both
   # version updates and security updates) since 2025, so it can update uv.lock
